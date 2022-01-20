@@ -32,6 +32,11 @@ typedef char YText[YTEXT_LENGTH];
 #define YERROR_CODE        "Not Found"
 #define YERROR_DESCRIPTION "No data found, symbol may be delisted"
 
+typedef enum YErrorCode
+{
+  YERROR_NERR = 0, YERROR_CERR, YERROR_CURL, YERROR_JSON, YERROR_YHOO,
+} YErrorCode;
+
 struct YError
 {
   YString response;
@@ -328,20 +333,18 @@ struct YOptionChain
   /* } options[1]; */
 };
 
-/* struct YStore */
-/* { */
 extern struct YError yql_error;
-
-extern GHashTable *yql_quotes;         /*< YString -> struct YQuote * */
-extern GHashTable *yql_quoteSummaries; /*< YString -> struct YQuoteSummary * */
-extern GHashTable *yql_charts;         /*< YString -> struct YChart * */
-extern GHashTable *yql_optionChains;   /*< YString -> struct YOptionChain * */
-/* }; */
 
 int  yql_init();
 int  yql_open();
 void yql_close();
 void yql_free();
+
+GHashTable *yql_getQuotes();
+struct YQuote *yql_getQuote(const char *);
+struct YQuoteSummary *yql_getQuoteSummary(const char *);
+struct YChart *yql_getChart(const char *);
+struct YOptionChain *yql_getOptionChain(const char *);
 
 int yql_quote(const char *);
 int yql_quoteSummary(const char *);
