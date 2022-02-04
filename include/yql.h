@@ -6,8 +6,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <gmodule.h>
-
 #define Y_HOST1        "https://query1.finance.yahoo.com/"
 #define Y_HOST2        "https://query2.finance.yahoo.com/"
 #define Y_SPARK        Y_HOST1 "v7/finance/spark"
@@ -15,6 +13,9 @@
 #define Y_QUOTESUMMARY Y_HOST1 "v10/finance/quoteSummary"
 #define Y_CHART        Y_HOST1 "v8/finance/chart"
 #define Y_OPTIONS      Y_HOST1 "v7/finance/options"
+#define Y_DOWNLOAD     Y_HOST1 "v7/finance/download"
+#define Y_INSIGHTS     Y_HOST1 "ws/insights/v2/finance/insights"
+#define Y_TIMESERIES   Y_HOST1 "ws/fundamentals-timeseries/v1/finance/timeseries"
 
 #define YARRAY_LENGTH  64
 #define YSTRING_LENGTH 32
@@ -180,6 +181,23 @@ struct YQuoteSummary
     int64_t shareHolderRightsRisk;
   } assetProfile;
 
+  struct CalendarEvents
+  {
+    int64_t dividendDate;
+    int64_t exDividendDate;
+
+    /* struct Earnings */
+    /* { */
+    /*   double  earningsAverage; */
+    int64_t earningsDate;
+    /*   double  earningsHigh; */
+    /*   double  earningsLow; */
+    /*   int64_t revenueAverage; */
+    /*   int64_t revenueHigh; */
+    /*   int64_t revenueLow; */
+    /* } earnings; */
+  } calendarEvents;
+
   struct DefaultKeyStatistics
   {
     double  annualHoldingsTurnover;
@@ -202,7 +220,7 @@ struct YQuoteSummary
     int64_t fundInceptionDate;
     double  heldPercentInsiders;
     double  heldPercentInstitutions;
-    double  impliedSharesOutstanding;
+    int64_t impliedSharesOutstanding;
     double  lastCapGain;
     int64_t lastDividendDate;
     double  lastDividendValue;
@@ -235,6 +253,108 @@ struct YQuoteSummary
     double  yield;
     double  ytdReturn;
   } defaultKeyStatistics;
+
+  /* struct Earnings */
+  /* { */
+  /*   struct EarningsChart */
+  /*   { */
+  /*     double  currentQuarterEstimate; */
+  /*     YString currentQuarterEstimateDate; */
+  /*     int64_t currentQuarterEstimateYear; */
+  /*     int64_t earningsDate; */
+
+#define QUARTERLY 4
+  /*     struct Quarterly */
+  /*     { */
+  /*       double  actual; */
+  /*       YString date; */
+  /*       double  estimate; */
+  /*     } quarterly[QUARTERLY]; */
+  /*   } earningsChart; */
+
+  struct FinancialsChart
+  {
+    union
+    {
+      int64_t int_date;
+      YString str_date;
+    } date;
+    int64_t earnings;
+    int64_t revenue;
+  } /* financialsChartYearly[QUARTERLY], */ financialsChartQuarterly[QUARTERLY];
+
+  /*   YString financialCurrency; */
+  /* } earnings; */
+
+  struct EarningsHistory
+  {
+    double  epsActual;
+    double  epsDifference;
+    double  epsEstimate;
+    YString period;
+    int64_t quarter;
+    double  surprisePercent;
+  } earningsHistory[QUARTERLY];
+
+  struct EarningsTrend
+  {
+    YString endDate;
+    double  growth;
+    YString period;
+
+    struct EarningsEstimate
+    {
+      double  avg;
+      double  growth;
+      double  high;
+      double  low;
+      int64_t numberOfAnalysts;
+      double  yearAgoEps;
+    } earningsEstimate;
+
+    struct RevenueEstimate
+    {
+      int64_t avg;
+      double  growth;
+      int64_t high;
+      int64_t low;
+      int64_t numberOfAnalysts;
+      int64_t yearAgoRevenue;
+    } revenueEstimate;
+  } earningsTrend[QUARTERLY];
+
+  struct FinancialData
+  {
+    double  currentPrice;
+    double  currentRatio;
+    double  debtToEquity;
+    double  earningsGrowth;
+    int64_t ebitda;
+    double  ebitdaMargins;
+    YString financialCurrency;
+    int64_t freeCashflow;
+    double  grossMargins;
+    int64_t grossProfits;
+    int64_t numberOfAnalystOpinions;
+    int64_t operatingCashflow;
+    double  operatingMargins;
+    double  profitMargins;
+    double  quickRatio;
+    YString recommendationKey;
+    double  recommendationMean;
+    double  returnOnAssets;
+    double  returnOnEquity;
+    double  revenueGrowth;
+    double  revenuePerShare;
+    double  targetHighPrice;
+    double  targetLowPrice;
+    double  targetMeanPrice;
+    double  targetMedianPrice;
+    int64_t totalCash;
+    double  totalCashPerShare;
+    int64_t totalDebt;
+    int64_t totalRevenue;
+  } financialData;
 };
 
 struct YChart
@@ -311,7 +431,8 @@ struct YOption
 
 struct YOptionChain
 {
-  /* int64_t expirationDates[0]; */
+/* #define EXPIRATION_DATES 24 */
+  /* int64_t expirationDates[EXPIRATION_DATES]; */
   /* bool    hasMiniOptions; */
   size_t  count;
   double  strikes     [YARRAY_LENGTH];
@@ -340,15 +461,19 @@ int  yql_open();
 void yql_close();
 void yql_free();
 
-GHashTable *yql_getQuotes();
 struct YQuote *yql_getQuote(const char *);
 struct YQuoteSummary *yql_getQuoteSummary(const char *);
 struct YChart *yql_getChart(const char *);
 struct YOptionChain *yql_getOptionChain(const char *);
 
+void yql_feQuote(void (*)(void *, void *, void *), void *);
+
 int yql_quote(const char *);
 int yql_quoteSummary(const char *);
+int yql_earnings(const char *);
+int yql_financials(const char *);
 int yql_chart(const char *);
 int yql_options(const char *);
+int yql_download(const char *, int64_t);
 
 #endif

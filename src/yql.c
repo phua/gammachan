@@ -3,6 +3,7 @@
 #include <assert.h>
 
 #include <curl/curl.h>
+#include <gmodule.h>
 #include <json-glib/json-glib.h>
 
 #include "../include/log.h"
@@ -10,9 +11,10 @@
 
 #define _U_ __attribute__ ((__unused__))
 
-#define LOG_FILENAME "log/yql.log"
+#define DOWNLOAD_FILENAME "./data/hist/%s_%s_%ld_%ld.csv"
+#define LOG_FILENAME "./log/yql.log"
 
-Log logger = NULL;
+static Log logger = NULL;
 
 struct YError yql_error;
 
@@ -312,6 +314,29 @@ static void json_assetProfile(JsonReader *r, struct AssetProfile *p)
   json_reader_end_member(r);
 }
 
+static void json_calendarEvents(JsonReader *r, struct CalendarEvents *p)
+{
+  if (json_reader_read_member(r, "calendarEvents")) {
+    json_int    (r, "dividendDate", &p->dividendDate);
+    json_int    (r, "exDividendDate", &p->exDividendDate);
+
+    if (json_reader_read_member(r, "earnings")) {
+      if (json_reader_read_member(r, "earningsDate")) {
+        if (json_reader_is_array(r)) {
+          if (json_reader_count_elements(r) > 0) {
+            json_reader_read_element(r, 0);
+            json_int    (r, "raw", &p->earningsDate);
+            json_reader_end_element(r);
+          }
+        }
+      }
+      json_reader_end_member(r);
+    }
+    json_reader_end_member(r);
+  }
+  json_reader_end_member(r);
+}
+
 static void json_defaultKeyStatistics(JsonReader *r, struct DefaultKeyStatistics *p)
 {
   if (json_reader_read_member(r, "defaultKeyStatistics")) {
@@ -335,7 +360,7 @@ static void json_defaultKeyStatistics(JsonReader *r, struct DefaultKeyStatistics
     json_int    (r, "fundInceptionDate", &p->fundInceptionDate);
     json_double (r, "heldPercentInsiders", &p->heldPercentInsiders);
     json_double (r, "heldPercentInstitutions", &p->heldPercentInstitutions);
-    json_double (r, "impliedSharesOutstanding", &p->impliedSharesOutstanding);
+    json_int    (r, "impliedSharesOutstanding", &p->impliedSharesOutstanding);
     json_double (r, "lastCapGain", &p->lastCapGain);
     json_int    (r, "lastDividendDate", &p->lastDividendDate);
     json_double (r, "lastDividendValue", &p->lastDividendValue);
@@ -371,12 +396,127 @@ static void json_defaultKeyStatistics(JsonReader *r, struct DefaultKeyStatistics
   json_reader_end_member(r);
 }
 
+static void json_financialsChart(JsonReader *r, const char *n _U_, void *v)
+{
+  struct FinancialsChart *p = (struct FinancialsChart *) v;
+  json_string (r, "date", p->date.str_date);
+  json_int    (r, "earnings", &p->earnings);
+  json_int    (r, "revenue", &p->revenue);
+}
+
+static void json_earningsHistory(JsonReader *r, const char *n _U_, void *v)
+{
+  struct EarningsHistory *p = (struct EarningsHistory *) v;
+  json_double (r, "epsActual", &p->epsActual);
+  json_double (r, "epsDifference", &p->epsDifference);
+  json_double (r, "epsEstimate", &p->epsEstimate);
+  json_string (r, "period", p->period);
+  json_int    (r, "quarter", &p->quarter);
+  json_double (r, "surprisePercent", &p->surprisePercent);
+}
+
+static void json_earningsEstimate(JsonReader *r, struct EarningsEstimate *p)
+{
+  if (json_reader_read_member(r, "earningsEstimate")) {
+    json_double (r, "avg", &p->avg);
+    json_double (r, "growth", &p->growth);
+    json_double (r, "high", &p->high);
+    json_double (r, "low", &p->low);
+    json_int    (r, "numberOfAnalysts", &p->numberOfAnalysts);
+    json_double (r, "yearAgoEps", &p->yearAgoEps);
+  }
+  json_reader_end_member(r);
+}
+
+static void json_revenueEstimate(JsonReader *r, struct RevenueEstimate *p)
+{
+  if (json_reader_read_member(r, "revenueEstimate")) {
+    json_int    (r, "avg", &p->avg);
+    json_double (r, "growth", &p->growth);
+    json_int    (r, "high", &p->high);
+    json_int    (r, "low", &p->low);
+    json_int    (r, "numberOfAnalysts", &p->numberOfAnalysts);
+    json_int    (r, "yearAgoRevenue", &p->yearAgoRevenue);
+  }
+  json_reader_end_member(r);
+}
+
+static void json_earningsTrend(JsonReader *r, const char *n _U_, void *v)
+{
+  struct EarningsTrend *p = (struct EarningsTrend *) v;
+  json_string (r, "endDate", p->endDate);
+  json_double (r, "growth", &p->growth);
+  json_string (r, "period", p->period);
+
+  json_earningsEstimate(r, &p->earningsEstimate);
+  json_revenueEstimate(r, &p->revenueEstimate);
+}
+
+static void json_financialData(JsonReader *r, struct FinancialData *p)
+{
+  if (json_reader_read_member(r, "financialData")) {
+    json_double (r, "currentPrice", &p->currentPrice);
+    json_double (r, "currentRatio", &p->currentRatio);
+    json_double (r, "debtToEquity", &p->debtToEquity);
+    json_double (r, "earningsGrowth", &p->earningsGrowth);
+    json_int    (r, "ebitda", &p->ebitda);
+    json_double (r, "ebitdaMargins", &p->ebitdaMargins);
+    json_string (r, "financialCurrency", p->financialCurrency);
+    json_int    (r, "freeCashflow", &p->freeCashflow);
+    json_double (r, "grossMargins", &p->grossMargins);
+    json_int    (r, "grossProfits", &p->grossProfits);
+    json_int    (r, "numberOfAnalystOpinions", &p->numberOfAnalystOpinions);
+    json_int    (r, "operatingCashflow", &p->operatingCashflow);
+    json_double (r, "operatingMargins", &p->operatingMargins);
+    json_double (r, "profitMargins", &p->profitMargins);
+    json_double (r, "quickRatio", &p->quickRatio);
+    json_string (r, "recommendationKey", p->recommendationKey);
+    json_double (r, "recommendationMean", &p->recommendationMean);
+    json_double (r, "returnOnAssets", &p->returnOnAssets);
+    json_double (r, "returnOnEquity", &p->returnOnEquity);
+    json_double (r, "revenueGrowth", &p->revenueGrowth);
+    json_double (r, "revenuePerShare", &p->revenuePerShare);
+    json_double (r, "targetHighPrice", &p->targetHighPrice);
+    json_double (r, "targetLowPrice", &p->targetLowPrice);
+    json_double (r, "targetMeanPrice", &p->targetMeanPrice);
+    json_double (r, "targetMedianPrice", &p->targetMedianPrice);
+    json_int    (r, "totalCash", &p->totalCash);
+    json_double (r, "totalCashPerShare", &p->totalCashPerShare);
+    json_int    (r, "totalDebt", &p->totalDebt);
+    json_int    (r, "totalRevenue", &p->totalRevenue);
+  }
+  json_reader_end_member(r);
+}
+
 static struct YQuoteSummary *json_quoteSummary(JsonReader *r, const char *s)
 {
   struct YQuoteSummary *q = ght_get(yql_quoteSummaries, s, sizeof(struct YQuoteSummary));
 
   json_assetProfile(r, &q->assetProfile);
+  json_calendarEvents(r, &q->calendarEvents);
   json_defaultKeyStatistics(r, &q->defaultKeyStatistics);
+  json_financialData(r, &q->financialData);
+
+  if (json_reader_read_member(r, "earnings")) {
+    if (json_reader_read_member(r, "financialsChart")) {
+      json_array  (r, "quarterly", q->financialsChartQuarterly, 0, QUARTERLY,
+                   sizeof(struct FinancialsChart), json_financialsChart);
+    }
+    json_reader_end_member(r);
+  }
+  json_reader_end_member(r);
+
+  if (json_reader_read_member(r, "earningsHistory")) {
+    json_array  (r, "history", q->earningsHistory, 0, QUARTERLY,
+                 sizeof(struct EarningsHistory), json_earningsHistory);
+  }
+  json_reader_end_member(r);
+
+  if (json_reader_read_member(r, "earningsTrend")) {
+    json_array  (r, "trend", q->earningsTrend, 0, QUARTERLY,
+                 sizeof(struct EarningsTrend), json_earningsTrend);
+  }
+  json_reader_end_member(r);
 
   return q;
 }
@@ -521,6 +661,8 @@ static struct YOptionChain *json_optionChain(JsonReader *r, const char *s)
   /*   q = json_quote(r, o->underlyingSymbol); */
   /* } */
   /* json_reader_end_member(r); */
+
+  /* json_int_rarray    (r, "expirationDates", c->expirationDates, EXPIRATION_DATES); */
 
   int strikeRange(JsonReader *r, int *a, int *b, size_t n)
   {
@@ -737,11 +879,6 @@ void yql_close()
   }
 }
 
-GHashTable *yql_getQuotes()
-{
-  return yql_quotes;
-}
-
 struct YQuote *yql_getQuote(const char *s)
 {
   return g_hash_table_lookup(yql_quotes, s);
@@ -762,9 +899,17 @@ struct YOptionChain *yql_getOptionChain(const char *s)
   return g_hash_table_lookup(yql_optionChains, s);
 }
 
+void yql_feQuote(GHFunc fp, gpointer p)
+{
+  g_hash_table_foreach(yql_quotes, fp, p);
+}
+
 static int yql_query(const char *url)
 {
+  log_debug(logger, "yql_query(%s)\n", url);
+
   curl_easy_setopt(easy, CURLOPT_URL, url);
+  curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, callback);
   struct JsonBuffer buffer = { .data = NULL, .size = 0 };
   curl_easy_setopt(easy, CURLOPT_WRITEDATA, &buffer);
   curl_easy_perform(easy);
@@ -774,36 +919,55 @@ static int yql_query(const char *url)
   return status;
 }
 
-static int yql_vaquery(const char *fmt, ...)
+static char *yql_vasprintf(/* char **restrict strp, */ const char *fmt, va_list ap)
 {
-  char *url = NULL;
-  va_list ap;
-  va_start(ap, fmt);
+  char *str = NULL;
 #ifdef _GNU_SOURCE
-  vasprintf(&url, fmt, ap);
+  vasprintf(&str, fmt, ap);
 #else
+  va_list args;
+  va_copy(args, ap);
   int n = 0;
-  n = vsnprintf(url, n, fmt, ap);
-  va_end(ap);
+  n = vsnprintf(str, n, fmt, ap);
   if (n < 0) {
     log_error(logger, "vsnprintf(%s)\n", fmt);
-    return YERROR_CERR;
+    return NULL;
   }
-  url = malloc(++n);
-  if (!url) {
+  str = malloc(++n);
+  if (!str) {
     log_error(logger, "malloc(): %s\n", strerror(errno));
-    return YERROR_CERR;
+    return NULL;
   }
-  va_start(ap, fmt);
-  n = vsnprintf(url, n, fmt, ap);
+  n = vsnprintf(str, n, fmt, args);
+  va_end(args);
   if (n < 0) {
     log_error(logger, "vsnprintf(%s)\n", fmt);
-    va_end(ap);
-    free(url);
-    return YERROR_CERR;
+    free(str);
+    return NULL;
   }
 #endif
+  return str;
+}
+
+static char *yql_asprintf(/* char **restrict strp, */ const char *fmt, ...)
+{
+  va_list ap;
+  va_start(ap, fmt);
+  char *str = yql_vasprintf(fmt, ap);
   va_end(ap);
+  return str;
+}
+
+static int yql_vaquery(const char *fmt, ...)
+{
+  va_list ap;
+  va_start(ap, fmt);
+  char *url = yql_vasprintf(fmt, ap);
+  va_end(ap);
+  if (!url) {
+    log_error(logger, "yql_vasprintf(%s)\n", fmt);
+    return YERROR_CERR;
+  }
 
   int status = yql_query(url);
   free(url);
@@ -817,7 +981,22 @@ int yql_quote(const char *s)
 
 int yql_quoteSummary(const char *s)
 {
-  return yql_vaquery(Y_QUOTESUMMARY "/%s" "?modules=assetProfile,defaultKeyStatistics", s);
+  return yql_vaquery(Y_QUOTESUMMARY "/%s" "?modules=assetProfile,defaultKeyStatistics,financialData", s);
+}
+
+int yql_earnings(const char *s)
+{
+  /* modules=indexTrend,industryTrend,sectorTrend */
+  return yql_vaquery(Y_QUOTESUMMARY "/%s" "?modules=calendarEvents,earnings,earningsHistory,earningsTrend", s);
+}
+
+int yql_financials(const char *s)
+{
+  return yql_vaquery(Y_QUOTESUMMARY "/%s" "?modules="
+                     "balanceSheetHistory,balanceSheetHistoryQuarterly,"
+                     "cashflowStatementHistory,cashflowStatementHistoryQuarterly,"
+                     "incomeStatementHistory,incomeStatementHistoryQuarterly",
+                     s);
 }
 
 int yql_chart(const char *s)
@@ -825,13 +1004,43 @@ int yql_chart(const char *s)
   /* interval := [ "2m", "1d", "1wk", "1mo" ] */
   /* range    := [ "1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max" ] */
   return yql_vaquery(Y_CHART "/%s?symbol=%s"
-                     "&events=div|split|earn" "&includeAdjustedClose=true" "&includePrePost=true"
-                     "&interval=%s&range=%s"
-                     "&useYfid=true",
+                     "&events=capitalGain|div|earn|split" "&includeAdjustedClose=true" "&includePrePost=true"
+                     "&interval=%s&range=%s",
                      s, s, "1d", "3mo");
 }
 
 int yql_options(const char *s)
 {
-  return yql_vaquery(Y_OPTIONS "/%s" "?straddle=true", s);
+  return yql_vaquery(Y_OPTIONS "/%s" "?straddle=false", s);
+}
+
+int yql_download(const char *s, time_t t)
+{
+  /* interval := [ "1d", "1wk", "1mo" ] */
+  /* events   := [ "capitalGain", "div", "history", "split" ] */
+  const char *interval = "1d", *events = "history";
+  char *url = yql_asprintf(Y_DOWNLOAD "/%s" "?period1=0" "&period2=%ld" "&interval=%s" "&events=%s"
+                           "&includeAdjustedClose=true", s, t, interval, events);
+  if (!url) {
+    log_error(logger, "yql_asprintf(%s)\n", Y_DOWNLOAD);
+    return YERROR_CERR;
+  }
+  char *filename = yql_asprintf(DOWNLOAD_FILENAME, s, events, 0L, t);
+  if (!filename) {
+    log_error(logger, "yql_asprintf(%s, %s, %s, %ld, %ld)\n", DOWNLOAD_FILENAME, s, events, 0L, t);
+    free(url);
+    return YERROR_CERR;
+  }
+
+  FILE *fstream = fopen(filename, "w+");
+/* #ifndef WIN32 */
+  curl_easy_setopt(easy, CURLOPT_URL, url);
+  curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, fwrite);
+  curl_easy_setopt(easy, CURLOPT_WRITEDATA, fstream);
+  curl_easy_perform(easy);
+/* #endif */
+  fclose(fstream);
+  free(filename);
+  free(url);
+  return YERROR_NERR;
 }
