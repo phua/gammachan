@@ -122,7 +122,7 @@ enum PanelType
 
 enum PanelMode
 {
-  MODE_DEFAULT, MODE_PROFILE, MODE_FINANCIALS, MODE_CHART, MODE_OPTIONS, MODE_EVENTS, MODE_NEWS
+  MODE_DEFAULT, MODE_PROFILE, MODE_FINANCIALS, MODE_CHART, MODE_OPTIONS, MODE_WATCHLIST, MODE_EVENTS, MODE_NEWS
 };
 
 struct Spark
@@ -142,9 +142,20 @@ struct Spark
   WINDOW *w_summary;
   WINDOW *w_details;
 
-  GString *cursym;
-  GString *query;
-  const GPtrArray *symbols;
+  struct
+  {
+    GString *cursym;
+    GString *query;
+    int64_t  startDate;
+    int64_t  endDate;
+    char    *events;
+    char    *interval;
+    char    *range;
+    int64_t  expiryDate;
+    double   strikePrice;
+
+    const GPtrArray *symbols;
+  };
 };
 
 struct EventCalendar

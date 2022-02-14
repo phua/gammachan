@@ -11,7 +11,6 @@
 
 #define _U_ __attribute__ ((__unused__))
 
-#define DOWNLOAD_FILENAME "./data/hist/%s_%s_%ld_%ld.csv"
 #define LOG_FILENAME "./log/yql.log"
 
 static Log logger = NULL;
@@ -34,12 +33,12 @@ static CURL *easy = NULL;
 static JsonPath *path = NULL;
 /* static GError *error = NULL; */
 
-/* static */ int min(int x, int y)
+static int min(int x, int y)
 {
   return x <= y ? x : y;
 }
 
-/* static */ int max(int x, int y)
+static int max(int x, int y)
 {
   return x >= y ? x : y;
 }
@@ -662,7 +661,7 @@ static struct YOptionChain *json_optionChain(JsonReader *r, const char *s)
   /* } */
   /* json_reader_end_member(r); */
 
-  /* json_int_rarray    (r, "expirationDates", c->expirationDates, EXPIRATION_DATES); */
+  /* json_int_rarray    (r, "expirationDates", o->expirationDates, EXPIRATION_DATES); */
 
   int strikeRange(JsonReader *r, int *a, int *b, size_t n)
   {
@@ -999,14 +998,24 @@ int yql_financials(const char *s)
                      s);
 }
 
+/**
+ * interval := [ "2m", "1d", "1wk", "1mo" ]
+ * range    := [ "1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max" ]
+ */
 int yql_chart(const char *s)
 {
-  /* interval := [ "2m", "1d", "1wk", "1mo" ] */
-  /* range    := [ "1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max" ] */
-  return yql_vaquery(Y_CHART "/%s?symbol=%s"
-                     "&events=capitalGain|div|earn|split" "&includeAdjustedClose=true" "&includePrePost=true"
-                     "&interval=%s&range=%s",
-                     s, s, "1d", "3mo");
+  const char *range = "3mo", *interval = "1d";
+
+  return yql_vaquery(Y_CHART "/%s?symbol=%s" "&range=%s" "&interval=%s"
+                     "&events=capitalGain|div|earn|split" "&includeAdjustedClose=true" "&includePrePost=true",
+                     s, s, range, interval);
+}
+
+int yql_chart_range(const char *s, time_t period1, time_t period2, const char *interval)
+{
+  return yql_vaquery(Y_CHART "/%s?symbol=%s" "&period1=%ld" "&period2=%ld" "&interval=%s"
+                     "&events=capitalGain|div|earn|split" "&includeAdjustedClose=true" "&includePrePost=true",
+                     s, s, period1, period2, interval);
 }
 
 int yql_options(const char *s)
@@ -1014,33 +1023,81 @@ int yql_options(const char *s)
   return yql_vaquery(Y_OPTIONS "/%s" "?straddle=false", s);
 }
 
-int yql_download(const char *s, time_t t)
+int yql_options_series(const char *s, time_t date)
 {
-  /* interval := [ "1d", "1wk", "1mo" ] */
-  /* events   := [ "capitalGain", "div", "history", "split" ] */
-  const char *interval = "1d", *events = "history";
-  char *url = yql_asprintf(Y_DOWNLOAD "/%s" "?period1=0" "&period2=%ld" "&interval=%s" "&events=%s"
-                           "&includeAdjustedClose=true", s, t, interval, events);
+  return yql_vaquery(Y_OPTIONS "/%s" "?straddle=false" "&date=%ld", s, date);
+}
+
+/**
+ * interval := [ "1d", "1wk", "1mo" ]
+ * events   := [ "capitalGain", "div", "history", "split" ]
+ */
+static int yql_download(const char *s, time_t period1, time_t period2, const char *interval, const char *events)
+{
+  char *url = yql_asprintf(Y_DOWNLOAD "/%s" "?period1=%ld" "&period2=%ld" "&interval=%s" "&events=%s" "&includeAdjustedClose=true",
+                           s, period1, period2, interval, events);
   if (!url) {
     log_error(logger, "yql_asprintf(%s)\n", Y_DOWNLOAD);
     return YERROR_CERR;
   }
-  char *filename = yql_asprintf(DOWNLOAD_FILENAME, s, events, 0L, t);
-  if (!filename) {
-    log_error(logger, "yql_asprintf(%s, %s, %s, %ld, %ld)\n", DOWNLOAD_FILENAME, s, events, 0L, t);
-    free(url);
-    return YERROR_CERR;
-  }
 
-  FILE *fstream = fopen(filename, "w+");
-/* #ifndef WIN32 */
   curl_easy_setopt(easy, CURLOPT_URL, url);
-  curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, fwrite);
-  curl_easy_setopt(easy, CURLOPT_WRITEDATA, fstream);
-  curl_easy_perform(easy);
-/* #endif */
-  fclose(fstream);
-  free(filename);
+  CURLcode status = curl_easy_perform(easy);
+  if (status != CURLE_OK) {
+    log_warn(logger, "curl_easy_perform(%s): %s\n", url, curl_easy_strerror(status));
+    free(url);
+    return YERROR_CURL;
+  }
   free(url);
   return YERROR_NERR;
+}
+
+static int yql_download_e(int status, char *data, size_t size)
+{
+  if (status != YERROR_NERR) {
+    return status;
+  } else if (!data || !size) {
+    return YERROR_CURL;
+  } else if (strncmp(data, "40", 2) == 0) {
+    memset(&yql_error, 0, sizeof(struct YError));
+    sscanf(data, "%" "31" "s %" "31" "[^:]: %" "127" "[^\n]", yql_error.response, yql_error.code, yql_error.description);
+    log_warn(logger, "YError: response=%s, code=%s, description=%s\n", yql_error.response, yql_error.code, yql_error.description);
+    return YERROR_YHOO;
+  } else {
+    return YERROR_NERR;
+  }
+}
+
+int yql_download_r(const char *s, time_t period1, time_t period2, const char *interval, char **data, size_t *size)
+{
+  const char *events = "history";
+
+  curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, callback);
+  struct JsonBuffer buffer = { .data = NULL, .size = 0 };
+  curl_easy_setopt(easy, CURLOPT_WRITEDATA, &buffer);
+
+  int status = yql_download(s, period1, period2, interval, events);
+  status = yql_download_e(status, buffer.data, buffer.size);
+  if (status == YERROR_NERR) {
+    *data = buffer.data, *size = buffer.size;
+  }
+  return status;
+}
+
+int yql_download_f(const char *s, time_t period1, time_t period2, const char *interval, FILE *fstream)
+{
+  const char *events = "history";
+
+/* #ifndef WIN32 */
+  curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, fwrite);
+  curl_easy_setopt(easy, CURLOPT_WRITEDATA, fstream);
+/* #endif */
+
+  int status = yql_download(s, period1, period2, interval, events);
+  char line[YTEXT_LENGTH];
+  rewind(fstream);
+  if (fgets(line, YTEXT_LENGTH, fstream)) {
+    status = yql_download_e(status, line, strnlen(line, YTEXT_LENGTH));
+  }
+  return status;
 }

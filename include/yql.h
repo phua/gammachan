@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #define Y_HOST1        "https://query1.finance.yahoo.com/"
 #define Y_HOST2        "https://query2.finance.yahoo.com/"
@@ -18,8 +19,15 @@
 #define Y_TIMESERIES   Y_HOST1 "ws/fundamentals-timeseries/v1/finance/timeseries"
 
 #define YARRAY_LENGTH  64
+#define YDATE_LENGTH   10
 #define YSTRING_LENGTH 32
 #define YTEXT_LENGTH   128
+
+#define STR(s)    #s
+#define STRIFY(s) STR(s)
+
+#define YDATE_IFORMAT  "%" STRIFY(YDATE_LENGTH) "[0-9-]"
+#define YDATE_OFORMAT  "%Y-%m-%d"
 
 /* typedef struct YArray */
 /* { */
@@ -27,6 +35,7 @@
 /*   size_t size; */
 /* } YArray; */
 
+typedef char YDate[YDATE_LENGTH + 1];
 typedef char YString[YSTRING_LENGTH];
 typedef char YText[YTEXT_LENGTH];
 
@@ -454,6 +463,20 @@ struct YOptionChain
   /* } options[1]; */
 };
 
+struct YHistory
+{
+  double  adjclose;
+  double  close;
+  YDate   date;
+  double  high;
+  double  low;
+  double  open;
+  int64_t volume;
+
+  const char *symbol;
+  int64_t timestamp;
+};
+
 extern struct YError yql_error;
 
 int  yql_init();
@@ -473,7 +496,10 @@ int yql_quoteSummary(const char *);
 int yql_earnings(const char *);
 int yql_financials(const char *);
 int yql_chart(const char *);
+int yql_chart_range(const char *, int64_t, int64_t, const char *);
 int yql_options(const char *);
-int yql_download(const char *, int64_t);
+int yql_options_series(const char *, int64_t);
+int yql_download_r(const char *, int64_t, int64_t, const char *, char **, size_t *);
+int yql_download_f(const char *, int64_t, int64_t, const char *, FILE *);
 
 #endif
