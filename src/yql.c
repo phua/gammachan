@@ -24,14 +24,12 @@ GHashTable *yql_optionChains = NULL;   /*< YString -> struct YOptionChain * */
 
 struct JsonBuffer
 {
-  char  *data;
-  size_t size;
+  char   *data;
+  size_t  size;
 };
 
 static CURL *easy = NULL;
 /* static char errbuf[CURL_ERROR_SIZE]; */
-static JsonPath *path = NULL;
-/* static GError *error = NULL; */
 
 static int min(int x, int y)
 {
@@ -51,14 +49,26 @@ static void *ght_get(GHashTable *t, const char *k, size_t n)
       if ((v = calloc(1, n))) {
         g_hash_table_insert(t, (char *) k, v);
       } else {
-        log_error(logger, "calloc(): %s\n", strerror(errno));
+        log_error(logger, "%s:%d: calloc(1, %zu): %s\n", __FILE__, __LINE__, n, strerror(errno));
         free((char *) k);
       }
     } else {
-      log_error(logger, "strndup(): %s\n", strerror(errno));
+      log_error(logger, "%s:%d: strndup(%s): %s\n", __FILE__, __LINE__, k, strerror(errno));
     }
   }
   return v;
+}
+
+static int YArray_resize(YArray *A, size_t size)
+{
+  size_t nmemb = A->capacity * 2;
+  void *data = reallocarray(A->data, nmemb, size);
+  if (!data) {
+    log_error(logger, "%s:%d: reallocarray(%zu, %zu): %s\n", __FILE__, __LINE__, nmemb, size, strerror(errno));
+    return YERROR_CERR;
+  }
+  A->data = data, A->capacity = nmemb;
+  return YERROR_NERR;
 }
 
 static void json_bool(JsonReader *r, const char *n, void *v)
@@ -152,6 +162,11 @@ static size_t json_array(JsonReader *r, const char *n, void *v, int v0, size_t v
   return i - j;
 }
 
+static size_t json_int_larray(JsonReader *r, const char *n, int64_t *v, int v0, size_t vn)
+{
+  return json_array(r, n, v, v0, vn, sizeof(int64_t), json_int);
+}
+
 static size_t json_double_larray(JsonReader *r, const char *n, double *v, int v0, size_t vn)
 {
   return json_array(r, n, v, v0, vn, sizeof(double), json_double);
@@ -167,9 +182,11 @@ static size_t json_double_rarray(JsonReader *r, const char *n, double *v, size_t
   return json_array(r, n, v, -1, vn, sizeof(double), json_double);
 }
 
-static struct YQuote *json_quote(JsonReader *r, const char *s)
+static struct YQuote *json_quote(JsonReader *r, const char *s _U_)
 {
-  struct YQuote *q = ght_get(yql_quotes, s, sizeof(struct YQuote));
+  YString symbol;
+  json_string (r, "symbol", symbol);
+  struct YQuote *q = ght_get(yql_quotes, symbol, sizeof(struct YQuote));
 
   json_double (r, "ask", &q->ask);
   json_int    (r, "askSize", &q->askSize);
@@ -250,8 +267,6 @@ static struct YQuote *json_quote(JsonReader *r, const char *s)
   json_double (r, "twoHundredDayAverageChange", &q->twoHundredDayAverageChange);
   json_double (r, "twoHundredDayAverageChangePercent", &q->twoHundredDayAverageChangePercent);
 
-  assert(strncmp(q->symbol, s, YSTRING_LENGTH) == 0);
-
   /* QuoteType.CRYPTOCURRENCY */
   json_int    (r, "circulatingSupply", &q->circulatingSupply);
   json_string (r, "fromCurrency", q->fromCurrency);
@@ -265,6 +280,14 @@ static struct YQuote *json_quote(JsonReader *r, const char *s)
   json_double (r, "trailingThreeMonthNavReturns", &q->trailingThreeMonthNavReturns);
   json_double (r, "trailingThreeMonthReturns", &q->trailingThreeMonthReturns);
   json_double (r, "ytdReturn", &q->ytdReturn);
+
+  /* QuoteType.OPTION */
+  json_string (r, "customPriceAlertConfidence", q->customPriceAlertConfidence);
+  json_int    (r, "expireDate", &q->expireDate);
+  json_string (r, "expireIsoDate", q->expireIsoDate);
+  json_int    (r, "openInterest", &q->openInterest);
+  json_double (r, "strike", &q->strike);
+  json_string (r, "underlyingSymbol", q->underlyingSymbol);
 
   return q;
 }
@@ -487,6 +510,14 @@ static void json_financialData(JsonReader *r, struct FinancialData *p)
   json_reader_end_member(r);
 }
 
+static void json_holdings(JsonReader *r, const char *n _U_, void *v)
+{
+  struct Holding *p = (struct Holding *) v;
+  json_string (r, "holdingName", p->holdingName);
+  json_double (r, "holdingPercent", &p->holdingPercent);
+  json_string (r, "symbol", p->symbol);
+}
+
 static struct YQuoteSummary *json_quoteSummary(JsonReader *r, const char *s)
 {
   struct YQuoteSummary *q = ght_get(yql_quoteSummaries, s, sizeof(struct YQuoteSummary));
@@ -514,6 +545,12 @@ static struct YQuoteSummary *json_quoteSummary(JsonReader *r, const char *s)
   if (json_reader_read_member(r, "earningsTrend")) {
     json_array  (r, "trend", q->earningsTrend, 0, QUARTERLY,
                  sizeof(struct EarningsTrend), json_earningsTrend);
+  }
+  json_reader_end_member(r);
+
+  if (json_reader_read_member(r, "topHoldings")) {
+    json_array  (r, "holdings", q->topHoldings.holdings, 0, HOLDINGS,
+                 sizeof(struct Holding), json_holdings);
   }
   json_reader_end_member(r);
 
@@ -661,7 +698,7 @@ static struct YOptionChain *json_optionChain(JsonReader *r, const char *s)
   /* } */
   /* json_reader_end_member(r); */
 
-  /* json_int_rarray    (r, "expirationDates", o->expirationDates, EXPIRATION_DATES); */
+  json_int_larray    (r, "expirationDates", o->expirationDates, 0, EXPIRATION_DATES);
 
   int strikeRange(JsonReader *r, int *a, int *b, size_t n)
   {
@@ -714,10 +751,8 @@ static struct YOptionChain *json_optionChain(JsonReader *r, const char *s)
   return o;
 }
 
-static int json_read(JsonNode *node)
+static int json_read(JsonNode *node, const char *symbol)
 {
-  static YString symbol = "";
-
   JsonReader *reader = json_reader_new(node);
   if (json_reader_is_object(reader)) {
     if (json_reader_read_element(reader, 0)) {
@@ -753,14 +788,8 @@ static int json_read(JsonNode *node)
             log_warn(logger, "YError: response=%s, code=%s, description=%s\n", yql_error.response, yql_error.code, yql_error.description);
             return YERROR_YHOO;
           }
-          JsonNode *match = json_path_match(path, node);
-          /* assert(json_node_get_node_type(match) == JSON_NODE_ARRAY); */
-          JsonArray *matches = json_node_get_array(match);
           for (int i = 0; i < json_reader_count_elements(reader); i++) {
             if (json_reader_read_element(reader, i)) {
-              if (i < (int) json_array_get_length(matches)) {
-                strncpy(symbol, json_array_get_string_element(matches, i), YSTRING_LENGTH);
-              }
               if (strcmp(response, "quoteResponse") == 0) {
                 json_quote(reader, symbol);
               } else if (strcmp(response, "quoteSummary") == 0) {
@@ -775,7 +804,6 @@ static int json_read(JsonNode *node)
             }
             json_reader_end_element(reader);
           }
-          json_node_unref(match);
         }
       }
       json_reader_end_member(reader);
@@ -787,7 +815,7 @@ static int json_read(JsonNode *node)
   return YERROR_NERR;
 }
 
-static int json_parse(struct JsonBuffer *buffer)
+static int json_parse(struct JsonBuffer *buffer, const char *symbol)
 {
   JsonParser *parser = json_parser_new();
   GError *error = NULL;
@@ -801,7 +829,7 @@ static int json_parse(struct JsonBuffer *buffer)
   JsonNode *root = json_parser_get_root(parser);
   log_debug(logger, "%s\n", json_to_string(root, TRUE));
 
-  int status = json_read(root);
+  int status = json_read(root, symbol);
   g_object_unref(parser);
   return status;
 }
@@ -821,16 +849,11 @@ int yql_init()
     return YERROR_CURL;
   }
 
-  path = json_path_new();
-  json_path_compile(path, "$..symbol", NULL);
-
   return YERROR_NERR;
 }
 
 void yql_free()
 {
-  g_object_unref(path);                     path = NULL;
-
   curl_global_cleanup();
 
   g_hash_table_destroy(yql_optionChains);   yql_optionChains = NULL;
@@ -847,7 +870,7 @@ static size_t callback(char *p, size_t size, size_t nmemb, void *user)
   struct JsonBuffer *buffer = (struct JsonBuffer *) user;
   buffer->data = realloc(buffer->data, buffer->size + nsize + 1);
   if (!buffer->data) {
-    log_error(logger, "realloc(): %s\n", strerror(errno));
+    log_error(logger, "%s:%d: realloc(%zu): %s\n", __FILE__, __LINE__, buffer->size + nsize + 1, strerror(errno));
     return 0;
   }
   memcpy(&buffer->data[buffer->size], p, nsize);
@@ -878,32 +901,32 @@ void yql_close()
   }
 }
 
-struct YQuote *yql_getQuote(const char *s)
+struct YQuote *yql_quote_get(const char *s)
 {
   return g_hash_table_lookup(yql_quotes, s);
 }
 
-struct YQuoteSummary *yql_getQuoteSummary(const char *s)
+struct YQuoteSummary *yql_quoteSummary_get(const char *s)
 {
   return g_hash_table_lookup(yql_quoteSummaries, s);
 }
 
-struct YChart *yql_getChart(const char *s)
+struct YChart *yql_chart_get(const char *s)
 {
   return g_hash_table_lookup(yql_charts, s);
 }
 
-struct YOptionChain *yql_getOptionChain(const char *s)
+struct YOptionChain *yql_optionChain_get(const char *s)
 {
   return g_hash_table_lookup(yql_optionChains, s);
 }
 
-void yql_feQuote(GHFunc fp, gpointer p)
+void yql_quote_foreach(GHFunc fp, gpointer p)
 {
   g_hash_table_foreach(yql_quotes, fp, p);
 }
 
-static int yql_query(const char *url)
+static int yql_query(const char *url, const char *symbol)
 {
   log_debug(logger, "yql_query(%s)\n", url);
 
@@ -913,12 +936,12 @@ static int yql_query(const char *url)
   curl_easy_setopt(easy, CURLOPT_WRITEDATA, &buffer);
   curl_easy_perform(easy);
 
-  int status = json_parse(&buffer);
+  int status = json_parse(&buffer, symbol);
   free(buffer.data);
   return status;
 }
 
-static char *yql_vasprintf(/* char **restrict strp, */ const char *fmt, va_list ap)
+static char *yql_vasprintf(const char *fmt, va_list ap)
 {
   char *str = NULL;
 #ifdef _GNU_SOURCE
@@ -934,7 +957,7 @@ static char *yql_vasprintf(/* char **restrict strp, */ const char *fmt, va_list 
   }
   str = malloc(++n);
   if (!str) {
-    log_error(logger, "malloc(): %s\n", strerror(errno));
+    log_error(logger, "%s:%d: malloc(%zu): %s\n", __FILE__, __LINE__, n, strerror(errno));
     return NULL;
   }
   n = vsnprintf(str, n, fmt, args);
@@ -948,7 +971,7 @@ static char *yql_vasprintf(/* char **restrict strp, */ const char *fmt, va_list 
   return str;
 }
 
-static char *yql_asprintf(/* char **restrict strp, */ const char *fmt, ...)
+static char *yql_asprintf(const char *fmt, ...)
 {
   va_list ap;
   va_start(ap, fmt);
@@ -961,6 +984,7 @@ static int yql_vaquery(const char *fmt, ...)
 {
   va_list ap;
   va_start(ap, fmt);
+
   char *url = yql_vasprintf(fmt, ap);
   va_end(ap);
   if (!url) {
@@ -968,7 +992,11 @@ static int yql_vaquery(const char *fmt, ...)
     return YERROR_CERR;
   }
 
-  int status = yql_query(url);
+  va_start(ap, fmt);
+  char *symbol = va_arg(ap, char *);
+  va_end(ap);
+
+  int status = yql_query(url, symbol);
   free(url);
   return status;
 }
@@ -998,6 +1026,11 @@ int yql_financials(const char *s)
                      s);
 }
 
+int yql_holdings(const char *s)
+{
+  return yql_vaquery(Y_QUOTESUMMARY "/%s" "?modules=topHoldings", s);
+}
+
 /**
  * interval := [ "2m", "1d", "1wk", "1mo" ]
  * range    := [ "1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max" ]
@@ -1025,7 +1058,12 @@ int yql_options(const char *s)
 
 int yql_options_series(const char *s, time_t date)
 {
-  return yql_vaquery(Y_OPTIONS "/%s" "?straddle=false" "&date=%ld", s, date);
+  return yql_vaquery(Y_OPTIONS "/%s" "?date=%ld" "&straddle=false", s, date);
+}
+
+int yql_options_series_k(const char *s, double strike)
+{
+  return yql_vaquery(Y_OPTIONS "/%s" "?strikeMin=%.2f&strikeMax=%.2f&getAllData=true" "&straddle=false", s, strike, strike);
 }
 
 /**
@@ -1080,6 +1118,47 @@ int yql_download_r(const char *s, time_t period1, time_t period2, const char *in
   status = yql_download_e(status, buffer.data, buffer.size);
   if (status == YERROR_NERR) {
     *data = buffer.data, *size = buffer.size;
+  } else {
+    free(buffer.data);
+  }
+  return status;
+}
+
+static int csv_history(const char *s, const char *data, size_t size, YArray *A)
+{
+  size_t i = 0;
+  while (i < size && data[i++] != 0x0A); /* Skip CSV header */
+
+  const char *format = YDATE_IFORMAT ",%lf,%lf,%lf,%lf,%lf,%ld\n%n";
+  for (int m = 0, n = 0; i < size; i += n) {
+    if (A->length >= A->capacity) {
+      int status = YArray_resize(A, sizeof(struct YHistory));
+      if (status != YERROR_NERR) {
+        return status;
+      }
+    }
+    struct YHistory *h = YArray_index(A, struct YHistory, A->length);
+    h->symbol = s;
+
+    m = sscanf(data + i, format, h->date, &h->open, &h->high, &h->low, &h->close, &h->adjclose, &h->volume, &n);
+    if (m < 7) {
+      log_warn(logger, "sscanf(%s, %zu)\n", s, i);
+      return YERROR_JSON;
+    }
+
+    A->length++;
+  }
+
+  return YERROR_NERR;
+}
+
+int yql_download_h(const char *s, time_t period1, time_t period2, const char *interval, YArray *A)
+{
+  char   *data = NULL; size_t  size = 0;
+  int status = yql_download_r(s, period1, period2, interval, &data, &size);
+  if (status == YERROR_NERR) {
+    status = csv_history(s, data, size, A);
+    free(data);
   }
   return status;
 }

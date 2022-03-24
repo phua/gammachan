@@ -1,5 +1,6 @@
 #include <ctype.h>
 #include <locale.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -240,9 +241,11 @@ static void wprint_help(WINDOW *win)
   mvwaddstrcp(win, y++, x, cp, ":COMMAND <GO>            Run command");
 
   y++;
-  mvwaddstrcp(win, y++, x, cp, ":{HP [DATE_RANGE] [DATE_RANGE] <GO>}    Plot historical prices");
-  mvwaddstrcp(win, y++, x, cp, ":{SET EXPIRY [%Y-%m-%d] <GO>}           Set option expiry date");
-  mvwaddstrcp(win, y++, x, cp, ":{SET STRIKE [%f] <GO>}                 Set option strike range");
+  mvwaddstrcp(win, y++, x, cp, ":{CP [SYMBOL]+ <GO>}                    Compare prices");
+  mvwaddstrcp(win, y++, x, cp, ":{CPPI <GO>}                            Consumer/Producer Price Index");
+  mvwaddstrcp(win, y++, x, cp, ":{HP [DATE_RANGE [DATE_RANGE]] <GO>}    Historical prices");
+  mvwaddstrcp(win, y++, x, cp, ":{SET EXPIRY [%Y-%m-%d] <GO>}           Set option series expiry date");
+  mvwaddstrcp(win, y++, x, cp, ":{SET STRIKE [%f] <GO>}                 Set option series strike range");
 
   y++;
   mvwaddstrcp(win, y++, x, cp, "DATE_RANGE := [%Y-%m-%d, 3M, 6M, YTD, 1Y, 2Y, 5Y, 10Y, MAX]");
@@ -289,7 +292,7 @@ static void wprint_quote(WINDOW *win, const struct YQuote * const q)
 {
   static const struct YQuoteSummary NULL_QUOTE_SUMMARY;
 
-  const struct YQuoteSummary *s = yql_getQuoteSummary(q->symbol);
+  const struct YQuoteSummary *s = yql_quoteSummary_get(q->symbol);
   if (!s) {
     s = &NULL_QUOTE_SUMMARY;
   }
@@ -344,6 +347,36 @@ static void wprint_assetProfile(WINDOW *win, const struct AssetProfile * const p
   ASSET_PROFILE_LAYOUT(LAYOUT_PRINT, win, y + 1, x + w / 3, w / 3, p);
   y = mvwprintp_summaryProfile(win, y + 1, x + MARGIN_X, p, q) + 1;
   COMPANY_OFFICER_LAYOUT(LAYOUT_PRINT_KEY, win, y, x + MARGIN_X, w / COMPANY_OFFICER_LAYOUT_COLS);
+}
+
+static void wprint_topHoldings(WINDOW *win, const struct TopHoldings * const p)
+{
+  static const struct YQuote NULL_QUOTE;
+
+  getallyx(win);
+  box(win, 0, 0);
+
+  int y = MARGIN_Y, x = MARGIN_X, w = maxx - x * 2;
+  mvwaddstrcp(win, y++, x, COLOR_PAIR_TITLE, "Top Holdings");
+  if (!p) {
+    mvwaddstrcn(win, ++y, x, w, COLOR_PAIR_INFO, "No data found.");
+    return;
+  }
+
+  ++y, x += MARGIN_X, w /= HOLDING_LAYOUT_COLS;
+  HOLDING_LAYOUT(LAYOUT_PRINT_KEY, win, y, x, w);
+
+  int h = min(maxy - y - 1 - MARGIN_Y - 1, HOLDINGS);
+  for (int i = HOLDINGS - h; i < HOLDINGS; i++, y++) {
+    const struct Holding * const r = &p->holdings[i];
+    const struct YQuote *q = yql_quote_get(r->symbol);
+    if (!q) {
+      q = &NULL_QUOTE;
+    }
+    int cpRow                = i % 2 ? COLOR_PAIR_YELLOW : COLOR_PAIR_BLUE;
+    int cpRegularMarketPrice = COLOR_PAIR_CHANGE(q->regularMarketChange);
+    HOLDING_LAYOUT(LAYOUT_PRINT_VAL, win, y, x, w, q);
+  }
 }
 
 static void wprint_defaultKeyStatistics(WINDOW *win, const struct DefaultKeyStatistics * const p,
@@ -420,10 +453,10 @@ static void wprint_options(WINDOW *win, const struct YOptionChain * const o, boo
     return;
   }
 
-  const struct YQuote * const q = yql_getQuote(o->underlyingSymbol);
+  const struct YQuote * const q = yql_quote_get(o->underlyingSymbol);
 
   mvwaddstrcn(win, ++y, x + w / 3 * 0, w / 3, COLOR_PAIR_KEY , "Calls");
-  mvwaddstrcn(win, y  , x + w / 3 * 1, w / 3, COLOR_PAIR_LINK, strdate(o->expirationDate));
+  mvwaddstrcn(win, y  , x + w / 3 * 1, w / 3, COLOR_PAIR_LINK, strgmdate(o->expirationDate));
   mvwaddstrcn(win, y++, x + w / 3 * 2, w / 3, COLOR_PAIR_KEY , "Puts");
 
   if (straddle) {
@@ -474,7 +507,7 @@ static void wprint_spark(WINDOW *win, const GPtrArray * const p)
 
   int h = min(maxy - y - 1 - MARGIN_Y - 1, p->len);
   for (guint i = p->len - h; i < p->len; i++, y++) {
-    const struct YQuote * const q = yql_getQuote(g_ptr_array_index(p, i));
+    const struct YQuote * const q = yql_quote_get(g_ptr_array_index(p, i));
     if (q) {
       int cpRow                  = i % 2 ? COLOR_PAIR_YELLOW : COLOR_PAIR_BLUE;
       int cpRegularMarketPrice   = COLOR_PAIR_CHANGE(q->regularMarketChange);
@@ -547,7 +580,7 @@ static void wprinte_earnings(WINDOW *win, const struct Event * const e)
 {
   static const struct YQuoteSummary NULL_QUOTE_SUMMARY;
 
-  const struct YQuoteSummary *s = yql_getQuoteSummary(e->symbol);
+  const struct YQuoteSummary *s = yql_quoteSummary_get(e->symbol);
   if (!s) {
     s = &NULL_QUOTE_SUMMARY;
   }
@@ -699,7 +732,6 @@ static void addEvent(void *symbol _U_, void *quote, void *calendar)
   const struct YQuote * const q = quote;
 
   if (IS_EQUITY(q->quoteType)) {
-    /* yql_quote(q->symbol); */
     /* yql_earnings(q->symbol); */
 
     EventCalendar_add(calendar, DIVIDEND, q->dividendDate, q->symbol, q->shortName);
@@ -728,7 +760,7 @@ void Spark_init(struct Spark *s)
   s->events = "history";
   s->interval = "1d";
   s->range = "3mo";
-  s->expiryDate = roundwos(DATE_RANGE_0D);
+  s->expiryDate = 0;
   s->strikePrice = 0.0d;
 
   WINDOW *p_win = s->p_pan->win;
@@ -871,10 +903,36 @@ void Spark_update(struct Spark *s)
     break;
   case EQUITY:
     query(yql_quote, s->cursym->str);
-    query(yql_quoteSummary, s->cursym->str);
-    query(yql_earnings, s->cursym->str);
+    const struct YQuote * const q = yql_quote_get(s->cursym->str);
+    if (IS_OPTION(q->quoteType)) {
+      query(yql_quote, q->underlyingSymbol);
+    }
+    if (IS_EQUITY(q->quoteType)) {
+      query(yql_quoteSummary, s->cursym->str);
+      query(yql_earnings, s->cursym->str);
+    }
+    if (IS_ETF(q->quoteType) || IS_MUTUALFUND(q->quoteType)) {
+      if (query(yql_holdings, s->cursym->str) == YERROR_NERR) {
+        const struct YQuoteSummary * const qs = yql_quoteSummary_get(s->cursym->str);
+        const struct Holding * const h = qs->topHoldings.holdings;
+        char str[HOLDINGS * YSTRING_LENGTH + 1] = { 0 };
+        for (int i = 0; i < HOLDINGS; i++) {
+          YString_append(str, h[i].symbol);
+          strcat(str, ",");
+        }
+        query(yql_quote, str);
+      }
+    }
     query(yql_chart, s->cursym->str);
-    query_e(yql_options_series(s->cursym->str, s->expiryDate), s->cursym->str);
+    if (IS_EQUITY(q->quoteType) || IS_ETF(q->quoteType)) {
+      if (s->expiryDate) {
+        query_e(yql_options_series(s->cursym->str, s->expiryDate), s->cursym->str);
+      } else if (query(yql_options, s->cursym->str) == YERROR_NERR) {
+        const struct YOptionChain * const o = yql_optionChain_get(s->cursym->str);
+        s->expiryDate = o->expirationDates[0];
+        s->strikePrice = o->strikes[o->count / 2];
+      }
+    }
     if (s->query->len) {
       query(yql_quote, s->query->str);
     }
@@ -919,19 +977,27 @@ void Spark_paint(struct Spark *s)
     wprint_blank(p_win);
     break;
   case EQUITY:
-    const struct YQuote * const q = yql_getQuote(s->cursym->str);
-    const struct YQuoteSummary * const qs = yql_getQuoteSummary(s->cursym->str);
+    const struct YQuote * const q = yql_quote_get(s->cursym->str);
+    const struct YQuoteSummary * const qs = yql_quoteSummary_get(s->cursym->str);
     wprint_quote(s->w_quote, q);
-    wprint_assetProfile(s->w_assetProfile, qs ? &qs->assetProfile : NULL, q);
+    if (IS_ETF(q->quoteType) || IS_MUTUALFUND(q->quoteType)) {
+      wprint_topHoldings(s->w_assetProfile, qs ? &qs->topHoldings : NULL);
+    } else {
+      wprint_assetProfile(s->w_assetProfile, qs ? &qs->assetProfile : NULL, q);
+    }
     wprint_defaultKeyStatistics(s->w_keyStatistics, qs ? &qs->defaultKeyStatistics : NULL, q);
-    wprint_chart(s->w_chart, yql_getChart(s->cursym->str));
-    wprint_options(s->w_options, yql_getOptionChain(s->cursym->str), false);
+    wprint_chart(s->w_chart, yql_chart_get(s->cursym->str));
+    if (IS_OPTION(q->quoteType)) {
+      wprint_quote(s->w_options, yql_quote_get(q->underlyingSymbol));
+    } else {
+      wprint_options(s->w_options, yql_optionChain_get(s->cursym->str), false);
+    }
     break;
   case CMDTY:
   case INDEX:
   case CRNCY:
-    wprint_quote(s->w_quote, yql_getQuote(s->cursym->str));
-    wprint_chart(s->w_chart, yql_getChart(s->cursym->str));
+    wprint_quote(s->w_quote, yql_quote_get(s->cursym->str));
+    wprint_chart(s->w_chart, yql_chart_get(s->cursym->str));
     wprint_spark(s->w_spark, s->symbols);
     break;
   case CLIENT:
@@ -958,20 +1024,20 @@ void Spark_mpaint(struct Spark *s)
   getallyx(p_win);
   wclear(p_win);
 
-  wprint_summary(s->w_summary, yql_getQuote(s->cursym->str));
+  wprint_summary(s->w_summary, yql_quote_get(s->cursym->str));
 
   switch (s->e_mod) {
     /* case MODE_DEFAULT: */
     /*   Spark_paint(s); */
     /*   break; */
   case MODE_CHART:
-    wprint_chart(s->w_details, yql_getChart(s->cursym->str));
+    wprint_chart(s->w_details, yql_chart_get(s->cursym->str));
     break;
   case MODE_OPTIONS:
-    wprint_options(s->w_details, yql_getOptionChain(s->cursym->str), true);
+    wprint_options(s->w_details, yql_optionChain_get(s->cursym->str), true);
     break;
   case MODE_EVENTS:
-    yql_feQuote(addEvent, &calendar);
+    yql_quote_foreach(addEvent, &calendar);
     wprint_events(s->w_details, &calendar);
     break;
   case MODE_WATCHLIST:
@@ -1028,16 +1094,39 @@ void Spark_download(struct Spark *s)
   fclose(file);
 }
 
-void Spark_cplot(struct Spark *s)
+static void plot_basket(const struct YChart * const c)
 {
-  if (!s->cursym->len) {
-    wprint_pop(w_pop, "plot", "User error", "No symbol found", s->cursym->str);
+  const struct YQuoteSummary * const qs = yql_quoteSummary_get(c->symbol);
+  if (!qs) {
     return;
   }
 
-  const struct YChart * const c = yql_getChart(s->cursym->str);
-  if (!c || !c->count) {
-    wprint_pop(w_pop, "plot", "Internal error", "No data found", s->cursym->str);
+  const struct YChart *C[HOLDINGS + 1] = { c, };
+  size_t n = 1;
+  for (int i = 0; i < HOLDINGS; i++) {
+    const char *symbol = qs->topHoldings.holdings[i].symbol;
+    if (YString_length(symbol) && query(yql_chart, symbol) == YERROR_NERR) {
+      C[n++] = yql_chart_get(symbol);
+    }
+  }
+  plt_gpplot_basket(plot, C, n);
+}
+
+static void plot_option(const struct YChart * const c)
+{
+  const struct YQuote * const q = yql_quote_get(c->symbol);
+  const struct YChart * const d = yql_chart_get(q->underlyingSymbol);
+  if (!d || !d->count) {
+    wprint_pop(w_pop, "plot", "Internal error", "No underlying data found", c->symbol);
+    return;
+  }
+  plt_gpplot_option(plot, c, d);
+}
+
+void Spark_plot(struct Spark *s)
+{
+  if (!s->cursym->len) {
+    wprint_pop(w_pop, "plot", "User error", "No symbol found", s->cursym->str);
     return;
   }
 
@@ -1045,29 +1134,42 @@ void Spark_cplot(struct Spark *s)
     wprint_pop(w_pop, "plot", "Internal error", "No plot found", s->cursym->str);
     return;
   }
-  plt_gpplot_chart(plot, c);
+
+  const struct YChart * const c = yql_chart_get(s->cursym->str);
+  if (!c || !c->count) {
+    wprint_pop(w_pop, "plot", "Internal error", "No data found", s->cursym->str);
+    return;
+  }
+
+  const struct YQuote * const q = yql_quote_get(s->cursym->str);
+  if (IS_ETF(q->quoteType) || IS_MUTUALFUND(q->quoteType)) {
+    plot_basket(c);
+  } else if (IS_OPTION(q->quoteType)) {
+    plot_option(c);
+  } else {
+    plt_gpplot_chart(plot, c);
+  }
 }
 
-static void upsert(const char *s, const char *data, size_t size)
+void Spark_rplot(struct Spark *s, const struct YChart *C[], size_t n)
 {
-  struct YHistory h = { .symbol = s, };
-
-  size_t i = 0;
-  while (i < size && data[i++] != 0x0A);
-
-  hdb_begin(&hdb);
-  const char *format = YDATE_IFORMAT ",%lf,%lf,%lf,%lf,%lf,%ld\n%n";
-  for (int m = 0, n = 0; i < size; i += n) {
-    m = sscanf(data + i, format, h.date, &h.open, &h.high, &h.low, &h.close, &h.adjclose, &h.volume, &n);
-    if (m < 7) {
-      log_default("sscanf(%s, %zu)\n", s, i);
-      hdb_rollback(&hdb);
-      return;
-    }
-    h.timestamp = strpts(h.date);
-    hdb_upsertHistory(&hdb, &h);
+  if (!s->cursym->len) {
+    wprint_pop(w_pop, "plot", "User error", "No symbol found", s->cursym->str);
+    return;
   }
-  hdb_commit(&hdb);
+
+  if (!plot) {
+    wprint_pop(w_pop, "plot", "Internal error", "No plot found", s->cursym->str);
+    return;
+  }
+
+  const struct YChart * const c = yql_chart_get(s->cursym->str);
+  if (!c || !c->count) {
+    wprint_pop(w_pop, "plot", "Internal error", "No data found", s->cursym->str);
+    return;
+  }
+
+  plt_gpplot_corr(plot, C, n);
 }
 
 void Spark_hplot(struct Spark *s)
@@ -1077,29 +1179,41 @@ void Spark_hplot(struct Spark *s)
     return;
   }
 
-  char  *data = NULL; size_t size = 0;
-
-  int status = yql_download_r(s->cursym->str, s->startDate, s->endDate, s->interval, &data, &size);
-  status = query_e(status, s->cursym->str);
-  if (status != 0 || !data || !size) {
-    wprint_pop(w_pop, "plot", "Internal error", "No data found", s->cursym->str);
-    return;
-  }
-
   if (!plot) {
     wprint_pop(w_pop, "plot", "Internal error", "No plot found", s->cursym->str);
     return;
   }
-  plt_gpplot_hist(plot, s->cursym->str, s->startDate, s->endDate, data, size);
 
-  upsert(s->cursym->str, data, size);
+  YArray A = { .data = NULL, .length = 0, .capacity = YARRAY_LENGTH };
+  A.data = reallocarray(A.data, A.capacity, sizeof(struct YHistory));
+  if (!A.data) {
+    log_default("%s:%d: reallocarray(%zu): %s\n", __FILE__, __LINE__, A.capacity, strerror(errno));
+    return;
+  }
+  int status = yql_download_h(s->cursym->str, s->startDate, s->endDate, s->interval, &A);
+  status = query_e(status, s->cursym->str);
+  if (status || !A.data || !A.length) {
+    wprint_pop(w_pop, "plot", "Internal error", "No data found", s->cursym->str);
+    return;
+  }
 
-  free(data);
+  plt_gpplot_history(plot, &A);
+  hdb_upsert_histories(&hdb, &A);
+
+  free(A.data);
+}
+
+static void plot_series()
+{
+  GPtrArray *g = NULL;
+  hdb_select_series(&hdb, &g);
+  plt_gpplot_cppi(plot, g);
+  g_ptr_array_free(g, TRUE);
 }
 
 static enum PanelType quotePanelType(const char *q, enum PanelType e)
 {
-  if (IS_ECNQUOTE(q) || IS_EQUITY(q) || IS_ETF(q) || IS_MUTUALFUND(q)) {
+  if (IS_ECNQUOTE(q) || IS_EQUITY(q) || IS_ETF(q) || IS_MUTUALFUND(q) || IS_OPTION(q)) {
     return EQUITY;
   } else if (IS_ALTSYMBOL(q) || IS_FUTURE(q)) {
     return CMDTY;
@@ -1116,11 +1230,39 @@ static enum PanelType quotePanelType(const char *q, enum PanelType e)
 static void search(const char *symbol, enum PanelType hint)
 {
   if (query(yql_quote, symbol) == 0) {
-    const struct YQuote * const q = yql_getQuote(symbol);
+    const struct YQuote * const q = yql_quote_get(symbol);
     setcurrpan(quotePanelType(q->quoteType, hint));
     struct Spark *s = getcurrspr();
     g_string_assign(s->cursym, symbol);
   }
+}
+
+static char *getsym_eocomp(const char *str)
+{
+  static YString comp;
+  memset(comp, 0, YSTRING_LENGTH);
+
+  struct Spark *s = getcurrspr();
+
+  YString symbol, expiry, clazz, strike;
+  int m = sscanf(str, "%8[A-Z-]%6[0-9]%1[CP]%8[0-9]", symbol, expiry, clazz, strike);
+  switch (m) {
+  case -1:
+  case 0:
+    sprintf(comp, "%s", s->cursym->str);
+    break;
+  case 1:
+    sprintf(comp, "%6s", strgmdate_o(s->expiryDate));
+    break;
+  case 2:
+    sprintf(comp, "%1c", 'C');
+    break;
+  case 3:
+    sprintf(comp, "%08.0f", s->strikePrice * 1000);
+    break;
+  }
+
+  return comp;
 }
 
 static char g_string_char_at(GString *string, gssize pos)
@@ -1139,7 +1281,17 @@ static void wgetsym(WINDOW *win)
   int c;
   while ((c = wgetch(win))) {
     switch (c) {
+    case GTKEY_MMKT:
+      g_string_append(symbol, "XX");
+      waddstr(win, "XX");
+      wrefresh(win);
+      hint = MMKT;
+      break;
     case GTKEY_EQUITY:
+      const char *str = getsym_eocomp(symbol->str);
+      g_string_append(symbol, str);
+      waddstr(win, str);
+      wrefresh(win);
       hint = EQUITY;
       break;
     case GTKEY_CMDTY:
@@ -1229,7 +1381,18 @@ static void runcmd(char *cmd)
   char *tok = strtok(cmd, " ");
   if (tok) {
     time_t tm = 0;
-    if (streq(tok, "HP")) {
+    if (streq(tok, "CP")) {
+      const struct YChart *C[HOLDINGS + 1] = { yql_chart_get(s->cursym->str), };
+      size_t n = 1;
+      while (n < HOLDINGS + 1 && (tok = strtok(NULL, " "))) {
+        if (query(yql_chart, tok) == YERROR_NERR) {
+          C[n++] = yql_chart_get(tok);
+        }
+      }
+      Spark_rplot(s, C, n);
+    } else if (streq(tok, "CPPI")) {
+      plot_series();
+    } else if (streq(tok, "HP")) {
       if ((tok = strtok(NULL, " "))) {
         if ((tm = strprts(tok)) == -1) {
           wprint_pop(w_pop, "rc", "User error", "Invalid start date", tok);
@@ -1253,7 +1416,13 @@ static void runcmd(char *cmd)
               wprint_pop(w_pop, "rc", "User error", "Invalid expiry date", tok);
               return;
             }
-            s->expiryDate = roundwos(tm);
+            const struct YOptionChain * const o = yql_optionChain_get(s->cursym->str);
+            for (size_t i = 0; i < EXPIRATION_DATES; i++) {
+              if (tm <= o->expirationDates[i]) {
+                s->expiryDate = o->expirationDates[i];
+                break;
+              }
+            }
           }
         } else if (streq(tok, "STRIKE")) {
           if ((tok = strtok(NULL, " "))) {
@@ -1371,17 +1540,34 @@ static void paint(enum PanelType newpan)
   doupdate();
 }
 
+static void start_task(void *(*task)(void *), void *arg)
+{
+  pthread_t thread;
+  int errnum = 0;
+
+  if ((errnum = pthread_create(&thread, NULL, task, arg)) != 0) {
+    log_default("pthread_create(): %s\n", strerror(errnum));
+    return;
+  }
+  if ((errnum = pthread_detach(thread)) != 0) {
+    log_default("pthread_detach(): %s\n", strerror(errnum));
+    return;
+  }
+}
+
 static void start()
 {
   EventCalendar_init(&calendar, gtm_bow, gtm_bow + gtm_diffday * EVENT_QUARTERLY);
 #define HDB_FILENAME "./data/hist/hdb.sqlite"
   hdb_init(&hdb, HDB_FILENAME);
   hdb_open(&hdb);
+
   plot = plt_gpopen();
   portfolios = Portfolios_new(config.g_pfs);
 
   yql_init();
   yql_open();
+  start_task(hdb_download_series, &hdb);
 
   wprint_top(w_top);
   wprint_bot(w_bot, TERM_PROMPT_GO);
@@ -1471,7 +1657,7 @@ static void start()
       wgetcmd(w_bot);
       goto START_REFRESH;
     case 'C':
-      Spark_cplot(getcurrspr());
+      Spark_plot(getcurrspr());
       paint(curpan);
       break;
     case 'c':
@@ -1523,8 +1709,8 @@ static void destroy()
   for (enum PanelType e = HELP; e < PANEL_TYPES; e++) {
     Spark_delete(sparks[e]);          sparks[e] = NULL;
     hide_panel(panels[e]);
-    delwin(panels[e]->win);
-    del_panel(panels[e]);             panels[e] = NULL;
+    del_panel(panels[e]);
+    delwin(panels[e]->win);           panels[e] = NULL;
   }
 
   clear();

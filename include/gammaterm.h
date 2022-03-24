@@ -99,21 +99,23 @@
 #define COLOR_PAIR_BOOL(b)                      \
   ((b) ? COLOR_PAIR_TRUE : COLOR_PAIR_FALSE)
 
-#define IS_PRE(m)        (strncmp(m, "PRE", 3)             == 0)
-#define IS_REGULAR(m)    (strncmp(m, "REGULAR", 7)         == 0)
-#define IS_POST(m)       (strncmp(m, "POST", 4)            == 0)
-#define IS_CLOSED(m)     (strncmp(m, "CLOSED", 6)          == 0)
+#define IS_PRE(m)     (strncmp(m, "PRE", 3)     == 0)
+#define IS_REGULAR(m) (strncmp(m, "REGULAR", 7) == 0)
+#define IS_POST(m)    (strncmp(m, "POST", 4)    == 0)
+#define IS_CLOSED(m)  (strncmp(m, "CLOSED", 6)  == 0)
 
-#define IS_ALTSYMBOL(q)  (strncmp(q, "ALTSYMBOL", 9)       == 0)
-#define IS_CRYPTO(q)     (strncmp(q, "CRYPTOCURRENCY", 14) == 0)
-#define IS_CURRENCY(q)   (strncmp(q, "CURRENCY", 8)        == 0)
-#define IS_ECNQUOTE(q)   (strncmp(q, "ECNQUOTE", 8)        == 0)
-#define IS_EQUITY(q)     (strncmp(q, "EQUITY", 6)          == 0)
-#define IS_ETF(q)        (strncmp(q, "ETF", 3)             == 0)
-#define IS_FUTURE(q)     (strncmp(q, "FUTURE", 6)          == 0)
-#define IS_INDEX(q)      (strncmp(q, "INDEX", 5)           == 0)
-#define IS_MUTUALFUND(q) (strncmp(q, "MUTUALFUND", 10)     == 0)
-#define IS_NONE(q)       (strncmp(q, "NONE", 4)            == 0)
+#define IS_ALTSYMBOL(q)   (strncmp(q, "ALTSYMBOL", 9)       == 0)
+#define IS_CRYPTO(q)      (strncmp(q, "CRYPTOCURRENCY", 14) == 0)
+#define IS_CURRENCY(q)    (strncmp(q, "CURRENCY", 8)        == 0)
+#define IS_ECNQUOTE(q)    (strncmp(q, "ECNQUOTE", 8)        == 0)
+#define IS_EQUITY(q)      (strncmp(q, "EQUITY", 6)          == 0)
+#define IS_ETF(q)         (strncmp(q, "ETF", 3)             == 0)
+#define IS_FUTURE(q)      (strncmp(q, "FUTURE", 6)          == 0)
+#define IS_INDEX(q)       (strncmp(q, "INDEX", 5)           == 0)
+#define IS_MONEYMARKET(q) (strncmp(q, "MONEYMARKET", 11)    == 0)
+#define IS_MUTUALFUND(q)  (strncmp(q, "MUTUALFUND", 10)     == 0)
+#define IS_NONE(q)        (strncmp(q, "NONE", 4)            == 0)
+#define IS_OPTION(q)      (strncmp(q, "OPTION", 6)          == 0)
 
 enum PanelType
 {

@@ -20,8 +20,8 @@
 
 #define YARRAY_LENGTH  64
 #define YDATE_LENGTH   10
-#define YSTRING_LENGTH 32
-#define YTEXT_LENGTH   128
+#define YSTRING_LENGTH 31
+#define YTEXT_LENGTH   127
 
 #define STR(s)    #s
 #define STRIFY(s) STR(s)
@@ -29,15 +29,25 @@
 #define YDATE_IFORMAT  "%" STRIFY(YDATE_LENGTH) "[0-9-]"
 #define YDATE_OFORMAT  "%Y-%m-%d"
 
-/* typedef struct YArray */
-/* { */
-/*   void  *data; */
-/*   size_t size; */
-/* } YArray; */
+typedef struct YArray
+{
+  char   *data;
+  size_t  length;
+  size_t  capacity;
+} YArray;
+
+#define YArray_index(A, T, i) ((T *) A->data + i)
+#define YArray_at(A, T, i)    (i < A->length ? YArray_index(A, T, i) : NULL)
 
 typedef char YDate[YDATE_LENGTH + 1];
-typedef char YString[YSTRING_LENGTH];
-typedef char YText[YTEXT_LENGTH];
+typedef char YString[YSTRING_LENGTH + 1];
+typedef char YText[YTEXT_LENGTH + 1];
+
+#define YString_length(s)         (strnlen(s, YSTRING_LENGTH))
+#define YString_append(dest, src) (strncat(dest, src, YSTRING_LENGTH))
+#define YString_compare(s1, s2)   (strncmp(s1, s2, YSTRING_LENGTH))
+#define YString_copy(dest, src)   (strncpy(dest, src, YSTRING_LENGTH))
+#define YString_equals(s1, s2)    (YString_compare(s1, s2) == 0)
 
 #define YERROR_CODE        "Not Found"
 #define YERROR_DESCRIPTION "No data found, symbol may be delisted"
@@ -148,6 +158,14 @@ struct YQuote
   double  trailingThreeMonthNavReturns;
   double  trailingThreeMonthReturns;
   double  ytdReturn;
+
+  /* QuoteType.OPTION */
+  YString customPriceAlertConfidence;
+  int64_t expireDate;
+  YString expireIsoDate;
+  int64_t openInterest;
+  double  strike;
+  YString underlyingSymbol;
 };
 
 struct YQuoteSummary
@@ -364,6 +382,17 @@ struct YQuoteSummary
     int64_t totalDebt;
     int64_t totalRevenue;
   } financialData;
+
+  struct TopHoldings
+  {
+#define HOLDINGS 10
+    struct Holding
+    {
+      YString holdingName;
+      double  holdingPercent;
+      YString symbol;
+    } holdings[HOLDINGS];
+  } topHoldings;
 };
 
 struct YChart
@@ -440,8 +469,8 @@ struct YOption
 
 struct YOptionChain
 {
-/* #define EXPIRATION_DATES 24 */
-  /* int64_t expirationDates[EXPIRATION_DATES]; */
+#define EXPIRATION_DATES 24
+  int64_t expirationDates[EXPIRATION_DATES];
   /* bool    hasMiniOptions; */
   size_t  count;
   double  strikes     [YARRAY_LENGTH];
@@ -460,7 +489,7 @@ struct YOptionChain
   /*     struct YOption call; */
   /*     struct YOption put; */
   /*   } straddles[YARRAY_LENGTH]; */
-  /* } options[1]; */
+  /* } options[EXPIRATION_DATES]; */
 };
 
 struct YHistory
@@ -474,7 +503,6 @@ struct YHistory
   int64_t volume;
 
   const char *symbol;
-  int64_t timestamp;
 };
 
 extern struct YError yql_error;
@@ -484,22 +512,25 @@ int  yql_open();
 void yql_close();
 void yql_free();
 
-struct YQuote *yql_getQuote(const char *);
-struct YQuoteSummary *yql_getQuoteSummary(const char *);
-struct YChart *yql_getChart(const char *);
-struct YOptionChain *yql_getOptionChain(const char *);
+struct YQuote *yql_quote_get(const char *);
+struct YQuoteSummary *yql_quoteSummary_get(const char *);
+struct YChart *yql_chart_get(const char *);
+struct YOptionChain *yql_optionChain_get(const char *);
 
-void yql_feQuote(void (*)(void *, void *, void *), void *);
+void yql_quote_foreach(void (*)(void *, void *, void *), void *);
 
 int yql_quote(const char *);
 int yql_quoteSummary(const char *);
 int yql_earnings(const char *);
 int yql_financials(const char *);
+int yql_holdings(const char *);
 int yql_chart(const char *);
 int yql_chart_range(const char *, int64_t, int64_t, const char *);
 int yql_options(const char *);
 int yql_options_series(const char *, int64_t);
+int yql_options_series_k(const char *, double);
 int yql_download_r(const char *, int64_t, int64_t, const char *, char **, size_t *);
+int yql_download_h(const char *, int64_t, int64_t, const char *, YArray *);
 int yql_download_f(const char *, int64_t, int64_t, const char *, FILE *);
 
 #endif
