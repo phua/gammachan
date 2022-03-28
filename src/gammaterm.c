@@ -47,6 +47,9 @@
 #define mvwaddstrcn(win, y, x, w, cp, s)                        \
   mvwaddstrcp(win, (y), ((x) + (((w) - strlen(s)) / 2)), cp, s)
 
+#define mvwaddstrrt(win, y, x, w, cp, s)                        \
+  mvwaddstrcp(win, (y), ((x) - (strnlen(s, (w)) - 1)), cp, s)
+
 #define wprintwcp(win, cp, f, ...)              \
   wattron(win, cp);                             \
   wprintw(win, f __VA_OPT__ (,) __VA_ARGS__);   \
@@ -239,6 +242,7 @@ static void wprint_help(WINDOW *win)
   mvwaddstrcp(win, y++, x, cp, "/SYMBOL [<F(n)>] <GO>    Search symbol");
   mvwaddstrcp(win, y++, x, cp, "@VENUE <GO>              Search venue");
   mvwaddstrcp(win, y++, x, cp, ":COMMAND <GO>            Run command");
+  mvwaddstrcp(win, y++, x, cp, ".LINK <GO>               Open link");
 
   y++;
   mvwaddstrcp(win, y++, x, cp, ":{CP [SYMBOL]+ <GO>}                    Compare prices");
@@ -634,6 +638,28 @@ static void wprint_events(WINDOW *win, const struct EventCalendar * const c)
   }
 }
 
+static void wprint_headline(WINDOW *win, const struct YHeadline * const p)
+{
+  getallyx(win);
+  box(win, 0, 0);
+
+  int y = MARGIN_Y, x = MARGIN_X, w = maxx - x * 2;
+  mvwaddstrcp(win, y++, x, COLOR_PAIR_TITLE, "Latest Financial News");
+  if (!p) {
+    mvwaddstrcn(win, ++y, x, w, COLOR_PAIR_INFO, "No data found.");
+    return;
+  }
+
+  ++y, x += MARGIN_X, w = maxx - x * 2;
+  int i = 0;
+  for (const struct YHeadline *q = p; q && y < maxy - MARGIN_Y - 3; q = q->next, y++) {
+    mvwaddstrcp(win, y, x, COLOR_PAIR_INFO, (char *) q->title);
+    mvwaddstrrt(win, y++, maxx - x, 32, COLOR_PAIR_KEY, (char *) q->pubDate);
+    mvwprintw  (win, y++, x, "%.*s", w - 32, (char *) q->description);
+    mvwprintwcp(win, y++, x, COLOR_PAIR_LINK, "[%2d] %s", ++i, (char *) q->link);
+  }
+}
+
 struct Event *Event_new(enum EventType e_evt, int64_t ts, const char *symbol, const char *shortName)
 {
   struct Event *e = malloc(sizeof(struct Event));
@@ -933,6 +959,7 @@ void Spark_update(struct Spark *s)
         s->strikePrice = o->strikes[o->count / 2];
       }
     }
+    query(yql_headline, s->cursym->str);
     if (s->query->len) {
       query(yql_quote, s->query->str);
     }
@@ -942,6 +969,7 @@ void Spark_update(struct Spark *s)
   case CRNCY:
     query(yql_quote, s->cursym->str);
     query(yql_chart, s->cursym->str);
+    query(yql_headline, s->cursym->str);
     if (s->query->len) {
       query(yql_quote, s->query->str);
     }
@@ -1036,12 +1064,15 @@ void Spark_mpaint(struct Spark *s)
   case MODE_OPTIONS:
     wprint_options(s->w_details, yql_optionChain_get(s->cursym->str), true);
     break;
+  case MODE_WATCHLIST:
+    wprint_spark(s->w_details, s->symbols);
+    break;
   case MODE_EVENTS:
     yql_quote_foreach(addEvent, &calendar);
     wprint_events(s->w_details, &calendar);
     break;
-  case MODE_WATCHLIST:
-    wprint_spark(s->w_details, s->symbols);
+  case MODE_NEWS:
+    wprint_headline(s->w_details, yql_headline_get(s->cursym->str));
     break;
   default:
     break;
@@ -1109,6 +1140,7 @@ static void plot_basket(const struct YChart * const c)
       C[n++] = yql_chart_get(symbol);
     }
   }
+
   plt_gpplot_basket(plot, C, n);
 }
 
@@ -1120,6 +1152,7 @@ static void plot_option(const struct YChart * const c)
     wprint_pop(w_pop, "plot", "Internal error", "No underlying data found", c->symbol);
     return;
   }
+
   plt_gpplot_option(plot, c, d);
 }
 
@@ -1374,6 +1407,47 @@ static void wgetsym(WINDOW *win)
   }
 }
 
+static int wgetgstr(WINDOW *win, const char *prompt, int (*isc)(int), char **str)
+{
+  GString *g = g_string_sized_new(YSTRING_LENGTH);
+
+  wprint_bot(win, prompt);
+  curs_set(1);
+
+  int c;
+  while ((c = wgetch(win))) {
+    switch (c) {
+    case GTKEY_GO:
+      *str = g->str;
+      __attribute__ ((__fallthrough__));
+    case GTKEY_CANCEL:
+      g_string_free(g, FALSE);
+      wprint_bot(win, TERM_PROMPT_GO);
+      curs_set(0);
+      wrefresh(win);
+      return c;
+    case ASKEY_BACKSPACE:
+      if (g->len > 0) {
+        g_string_erase(g, g->len - 1, 1);
+        getyx(win, cury, curx);
+        mvwdelchr(win, cury, curx - 1);
+        wrefresh(win);
+      }
+      break;
+    default:
+      if (isc(c)) {
+        c = toupper(c);
+        g_string_append_c(g, c);
+        waddch(win, c);
+        wrefresh(win);
+      }
+      break;
+    }
+  }
+
+  return ERR;
+}
+
 static void runcmd(char *cmd)
 {
   struct Spark *s = getcurrspr();
@@ -1442,42 +1516,36 @@ static void runcmd(char *cmd)
 
 static void wgetcmd(WINDOW *win)
 {
-  GString *command = g_string_sized_new(YSTRING_LENGTH);
+  char *str = NULL;
+  if (wgetgstr(win, TERM_PROMPT_CMD, isprint, &str) == GTKEY_GO) {
+    runcmd(str);
+  }
+  g_free(str);
+}
 
-  wprint_bot(win, TERM_PROMPT_CMD);
-  curs_set(1);
+static void wgetlnk(WINDOW *win)
+{
+  struct Spark *s = getcurrspr();
+  if (s->e_mod != MODE_NEWS) {
+    return;
+  }
 
-  int c;
-  while ((c = wgetch(win))) {
-    switch (c) {
-    case GTKEY_GO:
-      curs_set(0);
-      runcmd(command->str);
-      __attribute__ ((__fallthrough__));
-    case GTKEY_CANCEL:
-      g_string_free(command, TRUE);
-      wprint_bot(win, TERM_PROMPT_GO);
-      curs_set(0);
-      wrefresh(win);
-      return;
-    case ASKEY_BACKSPACE:
-      if (command->len > 0) {
-        g_string_erase(command, command->len - 1, 1);
-        getyx(win, cury, curx);
-        mvwdelchr(win, cury, curx - 1);
-        wrefresh(win);
+  char *str = NULL;
+  if (wgetgstr(win, TERM_PROMPT_LINK, isdigit, &str) == GTKEY_GO) {
+    size_t n = strtoul(str, NULL, 10);
+    if (n) {
+      const struct YHeadline * const p = yql_headline_at(s->cursym->str, n - 1);
+      if (p) {
+#define BROWSER "xdg-open"
+        char *cmd = _asprintf(BROWSER " '%s' 2>/dev/null &", p->link);
+        if (system(cmd) == -1) {
+          log_default("system(%s): %s\n", cmd, strerror(errno));
+        }
+        free(cmd);
       }
-      break;
-    default:
-      if (isprint(c)) {
-        c = toupper(c);
-        g_string_append_c(command, c);
-        waddch(win, c);
-        wrefresh(win);
-      }
-      break;
     }
   }
+  g_free(str);
 }
 
 static WINDOW *popwin(WINDOW *par, int d)
@@ -1645,6 +1713,9 @@ static void start()
     case '/':
       wgetsym(w_bot);
       goto START_REFRESH;
+    case '.':
+      wgetlnk(w_bot);
+      goto START_REFRESH;
     case '0':
       Spark_mrefresh(getcurrspr(), MODE_WATCHLIST);
       paint(curpan);
@@ -1675,6 +1746,11 @@ static void start()
     case 'E':
     case 'e':
       Spark_mrefresh(getcurrspr(), MODE_EVENTS);
+      paint(curpan);
+      break;
+    case 'N':
+    case 'n':
+      Spark_mrefresh(getcurrspr(), MODE_NEWS);
       paint(curpan);
       break;
     case 'O':

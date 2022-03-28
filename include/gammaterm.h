@@ -14,6 +14,7 @@
 #define TERM_PROMPT_GO     "GO>"
 #define TERM_PROMPT_SEARCH "/"
 #define TERM_PROMPT_CMD    ":"
+#define TERM_PROMPT_LINK   "."
 #define TERM_BTN_GO        "[ GO ]"
 #define TERM_BTN_CANCEL    "[ CANCEL ]"
 

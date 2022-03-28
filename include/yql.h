@@ -17,6 +17,7 @@
 #define Y_DOWNLOAD     Y_HOST1 "v7/finance/download"
 #define Y_INSIGHTS     Y_HOST1 "ws/insights/v2/finance/insights"
 #define Y_TIMESERIES   Y_HOST1 "ws/fundamentals-timeseries/v1/finance/timeseries"
+#define Y_HEADLINE     "https://feeds.finance.yahoo.com/rss/2.0/headline"
 
 #define YARRAY_LENGTH  64
 #define YDATE_LENGTH   10
@@ -28,6 +29,8 @@
 
 #define YDATE_IFORMAT  "%" STRIFY(YDATE_LENGTH) "[0-9-]"
 #define YDATE_OFORMAT  "%Y-%m-%d"
+
+typedef unsigned char uchar;
 
 typedef struct YArray
 {
@@ -54,7 +57,7 @@ typedef char YText[YTEXT_LENGTH + 1];
 
 typedef enum YErrorCode
 {
-  YERROR_NERR = 0, YERROR_CERR, YERROR_CURL, YERROR_JSON, YERROR_YHOO,
+  YERROR_NERR = 0, YERROR_CERR, YERROR_CURL, YERROR_JSON, YERROR_XML, YERROR_YHOO,
 } YErrorCode;
 
 struct YError
@@ -505,6 +508,18 @@ struct YHistory
   const char *symbol;
 };
 
+struct YHeadline
+{
+/* #define HEADLINES 20 */
+  struct YHeadline *next;
+
+  uchar *description;
+  uchar *guid;
+  uchar *link;
+  uchar *pubDate;
+  uchar *title;
+};
+
 extern struct YError yql_error;
 
 int  yql_init();
@@ -516,6 +531,8 @@ struct YQuote *yql_quote_get(const char *);
 struct YQuoteSummary *yql_quoteSummary_get(const char *);
 struct YChart *yql_chart_get(const char *);
 struct YOptionChain *yql_optionChain_get(const char *);
+struct YHeadline *yql_headline_get(const char *);
+struct YHeadline *yql_headline_at(const char *, size_t);
 
 void yql_quote_foreach(void (*)(void *, void *, void *), void *);
 
@@ -532,5 +549,6 @@ int yql_options_series_k(const char *, double);
 int yql_download_r(const char *, int64_t, int64_t, const char *, char **, size_t *);
 int yql_download_h(const char *, int64_t, int64_t, const char *, YArray *);
 int yql_download_f(const char *, int64_t, int64_t, const char *, FILE *);
+int yql_headline(const char *);
 
 #endif

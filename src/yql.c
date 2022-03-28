@@ -5,6 +5,8 @@
 #include <curl/curl.h>
 #include <gmodule.h>
 #include <json-glib/json-glib.h>
+#include <libxml/parser.h>
+#include <libxml/tree.h>
 
 #include "../include/log.h"
 #include "../include/yql.h"
@@ -21,6 +23,7 @@ GHashTable *yql_quotes = NULL;         /*< YString -> struct YQuote * */
 GHashTable *yql_quoteSummaries = NULL; /*< YString -> struct YQuoteSummary * */
 GHashTable *yql_charts = NULL;         /*< YString -> struct YChart * */
 GHashTable *yql_optionChains = NULL;   /*< YString -> struct YOptionChain * */
+GHashTable *yql_headlines = NULL;      /*< YString -> struct YHeadline * */
 
 struct JsonBuffer
 {
@@ -59,7 +62,7 @@ static void *ght_get(GHashTable *t, const char *k, size_t n)
   return v;
 }
 
-static int YArray_resize(YArray *A, size_t size)
+int YArray_resize(YArray *A, size_t size)
 {
   size_t nmemb = A->capacity * 2;
   void *data = reallocarray(A->data, nmemb, size);
@@ -69,6 +72,28 @@ static int YArray_resize(YArray *A, size_t size)
   }
   A->data = data, A->capacity = nmemb;
   return YERROR_NERR;
+}
+
+void YHeadline_free(struct YHeadline *p)
+{
+  if (p) {
+    xmlFree(p->description);
+    xmlFree(p->guid);
+    xmlFree(p->link);
+    xmlFree(p->pubDate);
+    xmlFree(p->title);
+    free(p);
+  }
+}
+
+void YHeadline_destroy(void *ptr)
+{
+  struct YHeadline *p = ptr, *q = NULL;
+  while (p) {
+    q = p->next;
+    YHeadline_free(p);
+    p = q;
+  }
 }
 
 static void json_bool(JsonReader *r, const char *n, void *v)
@@ -842,6 +867,7 @@ int yql_init()
   yql_quoteSummaries = g_hash_table_new_full(g_str_hash, g_str_equal, free, free);
   yql_charts = g_hash_table_new_full(g_str_hash, g_str_equal, free, free);
   yql_optionChains = g_hash_table_new_full(g_str_hash, g_str_equal, free, free);
+  yql_headlines = g_hash_table_new_full(g_str_hash, g_str_equal, free, YHeadline_destroy);
 
   CURLcode code = curl_global_init(CURL_GLOBAL_ALL);
   if (code != CURLE_OK) {
@@ -854,8 +880,10 @@ int yql_init()
 
 void yql_free()
 {
+  xmlCleanupParser();
   curl_global_cleanup();
 
+  g_hash_table_destroy(yql_headlines);      yql_headlines = NULL;
   g_hash_table_destroy(yql_optionChains);   yql_optionChains = NULL;
   g_hash_table_destroy(yql_charts);         yql_charts = NULL;
   g_hash_table_destroy(yql_quoteSummaries); yql_quoteSummaries = NULL;
@@ -919,6 +947,18 @@ struct YChart *yql_chart_get(const char *s)
 struct YOptionChain *yql_optionChain_get(const char *s)
 {
   return g_hash_table_lookup(yql_optionChains, s);
+}
+
+struct YHeadline *yql_headline_get(const char *s)
+{
+  return g_hash_table_lookup(yql_headlines, s);
+}
+
+struct YHeadline *yql_headline_at(const char *s, size_t i)
+{
+  struct YHeadline *p = yql_headline_get(s);
+  while (i-- && (p = p->next));
+  return p;
 }
 
 void yql_quote_foreach(GHFunc fp, gpointer p)
@@ -1178,5 +1218,100 @@ int yql_download_f(const char *s, time_t period1, time_t period2, const char *in
   if (fgets(line, YTEXT_LENGTH, fstream)) {
     status = yql_download_e(status, line, strnlen(line, YTEXT_LENGTH));
   }
+  return status;
+}
+
+static struct YHeadline *rss_item(xmlDoc *doc, xmlNode *node)
+{
+  struct YHeadline *p = calloc(1, sizeof(struct YHeadline));
+  if (!p) {
+    log_error(logger, "%s:%d: calloc(): %s\n", __FILE__, __LINE__, strerror(errno));
+    return NULL;
+  }
+
+#define xmlCharStrEqual(s1, s2) xmlStrEqual(s1, (const xmlChar *) s2)
+
+  for (xmlNode *n = node->xmlChildrenNode; n; n = n->next) {
+    if (xmlCharStrEqual(n->name, "description")) {
+      p->description = xmlNodeListGetString(doc, n->xmlChildrenNode, 1);
+    } else if (xmlCharStrEqual(n->name, "guid")) {
+      p->guid = xmlNodeListGetString(doc, n->xmlChildrenNode, 1);
+    } else if (xmlCharStrEqual(n->name, "link")) {
+      p->link = xmlNodeListGetString(doc, n->xmlChildrenNode, 1);
+    } else if (xmlCharStrEqual(n->name, "pubDate")) {
+      p->pubDate = xmlNodeListGetString(doc, n->xmlChildrenNode, 1);
+    } else if (xmlCharStrEqual(n->name, "title")) {
+      p->title = xmlNodeListGetString(doc, n->xmlChildrenNode, 1);
+    }
+  }
+
+  return p;
+}
+
+static int rss_read(xmlDoc *doc, xmlNode *node, const char *s)
+{
+  for (xmlNode *rss = node->xmlChildrenNode; rss; rss = rss->next) {
+    if (xmlCharStrEqual(rss->name, "channel")) {
+      struct YHeadline *p = NULL;
+      for (xmlNode *channel = rss->xmlChildrenNode; channel; channel = channel->next) {
+        if (xmlCharStrEqual(channel->name, "item")) {
+          struct YHeadline *q = rss_item(doc, channel);
+          if (!p) {
+            g_hash_table_insert(yql_headlines, strndup(s, YSTRING_LENGTH), q);
+          } else {
+            p->next = q;
+          }
+          p = q;
+        }
+      }
+    }
+  }
+  return YERROR_NERR;
+}
+
+static int rss_parse(struct JsonBuffer *buffer, const char *s)
+{
+  xmlDoc *doc = xmlReadMemory(buffer->data, buffer->size, "noname.xml", NULL, 0);
+  if (!doc) {
+    log_warn(logger, "xmlReadMemory()\n");
+    return YERROR_XML;
+  }
+  xmlNode *root = xmlDocGetRootElement(doc);
+  if (!root) {
+    log_warn(logger, "xmlDocGetRootElement()\n");
+    return YERROR_XML;
+  }
+  if (!xmlCharStrEqual(root->name, "rss")) {
+    log_warn(logger, "xmlDocGetRootElement(): %s\n", root->name);
+    return YERROR_YHOO;
+  }
+
+  int status = rss_read(doc, root, s);
+  xmlFreeDoc(doc);
+  return status;
+}
+
+int yql_headline(const char *s)
+{
+  char *url = yql_asprintf(Y_HEADLINE "?s=%s", s);
+  if (!url) {
+    log_error(logger, "yql_asprintf(%s)\n", Y_HEADLINE);
+    return YERROR_CERR;
+  }
+
+  curl_easy_setopt(easy, CURLOPT_URL, url);
+  curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, callback);
+  struct JsonBuffer buffer = { .data = NULL, .size = 0 };
+  curl_easy_setopt(easy, CURLOPT_WRITEDATA, &buffer);
+  CURLcode code = curl_easy_perform(easy);
+  if (code != CURLE_OK) {
+    log_warn(logger, "curl_easy_perform(%s): %s\n", url, curl_easy_strerror(code));
+    free(url);
+    return YERROR_CURL;
+  }
+  free(url);
+
+  int status = rss_parse(&buffer, s);
+  free(buffer.data);
   return status;
 }
